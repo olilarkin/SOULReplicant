@@ -1,0 +1,218 @@
+/*
+    == SOUL example code ==
+
+    Blade Runner End Titles by Vangelis
+
+    Thanks to Mick Grierson...  https://github.com/micknoise/Maximilian/blob/master/maximilian_examples/16.Replicant.cpp
+
+    SOUL port by Oli Larkin
+    
+*/
+
+namespace Replicant
+{
+    let clock = 9; // e.g quarter note in samples = SR/clock
+
+    graph Replicant [[ main ]]
+    {
+        output stream float out;
+
+        let
+        {
+            bass = Bass;
+            lead = Lead;
+            delay = Delay(0.35f);
+        }
+
+        connection
+        {
+            bass.out -> out;
+            lead.out -> out;
+            lead.out -> delay.audioIn;
+            delay.audioOut -> out;
+        }
+    }
+
+    float pdSawtooth(float phase, float dcw) 
+    {
+        dcw = clamp(dcw, 0.001f, 0.999f);
+        dcw = (1.f-dcw) * 0.5f;
+        let hmdcw = 0.5f - dcw;
+        let arg1 = phase * (hmdcw/dcw);
+        let arg2 = (-1.f * phase + 1.f) * (hmdcw / (1.f - dcw));
+        let pd = phase + min(arg1, arg2);
+        return -cos(pd * float(twoPi));
+    }
+
+    float pwm(float phase, float pw) 
+    {
+        pw = clamp(pw, 0.01f, 0.99f);
+        return ((phase + (wrap(phase + pw, 1.f) * -1.f) + pw) * 2.f) - 1.f;
+    }
+
+    float triangle(float phase) 
+    { 
+      return 1.f - abs((phase * 2.f) - 1.f ); 
+    }
+
+    float processPhasor(float& phase, float phaseIncrement)
+    {
+        phase = wrap(phase + phaseIncrement, 1.f);
+        return phase;
+    }
+
+    float processSmoother(float& outm1, float in)
+    {
+        outm1 = (in * 0.01f) + (outm1 * 0.99f);
+        return outm1;
+    }
+
+    processor Delay (float feedbackLevel)
+    {
+        input  stream float audioIn;
+        output stream float audioOut;
+
+        void run()
+        {
+            float[44100] buffer;
+            wrap<44100> bufferIdx = 0;
+            float last;
+
+            let delayTime = int ((processor.frequency / clock) * 3.98f); //3.98f to reduce comb filtering
+
+            loop
+            {
+                let out = buffer[bufferIdx - delayTime];
+                last = out;
+                buffer[bufferIdx++] = audioIn + (last * feedbackLevel);
+
+                audioOut << out;
+                advance();
+            }
+        }
+    }
+
+    processor Lead
+    {
+        output stream float out;
+
+        void run()
+        {
+            int[] triggerArray =(1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+                                 1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,
+                                 1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+                                 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+                                 1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+                                 1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,
+                                 1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+                                 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+                                 1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+                                 1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,
+                                 1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+                                 0,0,0,0,0,0,0,0,1,0,0,0,1,0,0,0,
+                                 1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+                                 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+                                 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+                                 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0);
+
+            int[] pitchArray = (69,67,65,64,67,66,64,62,65,64,62,57,55,60,57);
+            
+            let samplesPerQuarterNote = int (processor.frequency / clock);
+
+            wrap<256> playHead = 0;
+            wrap<15> pitchIdx = 0;
+            bool trig = true;
+            float osc1PhaseIncr;
+            float osc2PhaseIncr;
+            float osc1Phasor;
+            float osc2Phasor;
+            float lfoPhasor;
+
+            float envPhasor;
+            float envPhaseIncr = float (processor.period * 4.f);
+            float smootherOutm1;
+            let lfoPhaseIncrement = float (processor.period * 0.8);
+            int basePitch;
+            float gate; // hack to get it to start on 2nd loop
+
+            loop 
+            {
+                let noteLength = samplesPerQuarterNote * 1;
+
+                loop (noteLength)
+                {
+                    if(triggerArray[playHead] > 0)
+                    {
+                        if(trig)
+                        {
+                            basePitch = pitchArray.at (pitchIdx++);
+                            envPhasor = 0.f;
+                            trig = false;
+                        }
+                    }
+                    envPhasor = envPhasor + envPhaseIncr;
+                    let env = processSmoother(smootherOutm1, clamp(envPhasor, 0.f, 1.f)) * gate;
+
+                    let lfoMod = (sin(processPhasor(lfoPhasor, lfoPhaseIncrement) * float(twoPi)) * 0.1f) * env;
+
+                    osc1PhaseIncr = float (soul::noteNumberToFrequency (basePitch + lfoMod) * processor.period);
+                    osc2PhaseIncr = float (soul::noteNumberToFrequency (basePitch + lfoMod + 0.1f) * processor.period);
+
+                    out << 0.15f * pdSawtooth(processPhasor(osc1Phasor, osc1PhaseIncr), 0.9f) * env;
+                    out << 0.15f * pdSawtooth(processPhasor(osc2Phasor, osc2PhaseIncr), 0.91f) * env;
+                    
+                    advance();
+                }
+
+                playHead++;
+
+                if(playHead == 0)
+                    gate = 1.f;
+
+                trig = true;
+            }
+        }
+    }
+
+    processor Bass
+    {
+        output stream float out;
+
+        void run()
+        {
+            int[] arp = (57,57,59,60);
+            int[] rootNotes = (0,0,7,2,5,5,0,0);
+            let samplesPerQuarterNote = int (processor.frequency / clock);
+            float osc1Phasor;
+            float osc2Phasor;
+            float lfoPhasor;
+
+            wrap<8> rootIdx = 0;
+            wrap<32> playHead = 0;
+
+            loop 
+            {
+                let noteFrequency  = soul::noteNumberToFrequency (arp.at(playHead % 4) + rootNotes.at(rootIdx) - 12);
+                let noteLength     = samplesPerQuarterNote;
+                let osc1PhaseIncr = float (noteFrequency * processor.period);
+                let osc2PhaseIncr = float (noteFrequency * processor.period * 0.5);
+                let lfoPhaseIncrement = float (0.3 * processor.period);
+
+                float env = 1.;
+
+                loop (noteLength)
+                {
+                    out << (0.3f * pwm(processPhasor(osc1Phasor, osc1PhaseIncr), triangle(processPhasor(lfoPhasor, lfoPhaseIncrement)))) * env;
+                    out << (0.3f * pdSawtooth(processPhasor(osc2Phasor, osc2PhaseIncr), 0.9f));
+                    env = env - (1.f/samplesPerQuarterNote);
+                    advance();
+                }
+
+                playHead++;
+
+                if(playHead == 0)
+                    rootIdx++;
+            }
+        }
+    }
+}
