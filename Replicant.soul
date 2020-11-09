@@ -82,7 +82,7 @@ namespace Replicant
 
             loop
             {
-                let out = buffer[bufferIdx - delayTime];
+                let out = buffer[wrap<44100>(bufferIdx - delayTime)];
                 last = out;
                 buffer[bufferIdx++] = audioIn + (last * feedbackLevel);
 
